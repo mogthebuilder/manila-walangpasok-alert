@@ -115,7 +115,13 @@ def run():
         last_seen = get_last_seen()
         match_found = False
 
-        for post_text in collected_posts[:10]:
+        for idx, post_text in enumerate(collected_posts[:10]):
+            # --- ADD THESE 3 DEBUG LINES HERE ---
+            print(f"\n--- DEBUG POST {idx+1} START ---")
+            print(post_text)
+            print(f"--- DEBUG POST {idx+1} END ---\n")
+            # ------------------------------------
+
             post_snippet = post_text[:100].replace("\n", " ")
             post_text_lower = post_text.lower()
 

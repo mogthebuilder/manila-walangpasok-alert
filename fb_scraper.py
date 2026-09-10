@@ -1,4 +1,5 @@
 import os
+import hashlib
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -7,32 +8,17 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TARGET_URL = "https://www.facebook.com/iskomorenodomagoso"
 
 SUSPENSION_KEYWORDS = [
-    "walangpasok",
-    "walang pasok",
-    "suspension",
-    "suspended",
-    "cancel",
-    "cancelled",
-    "cancellation",
-    "no classes",
-    "suspensyon",
-    "alternative",
-    "alternative mode",
-    "online classes"
+    "walangpasok", "walang pasok", "suspension", "suspended", 
+    "cancel", "cancelled", "cancellation", "no classes", 
+    "suspensyon", "alternative", "alternative mode", "online classes"
 ]
 
 LOCATION_KEYWORDS = [
-    "manila",
-    "maynila",
-    "lungsod ng maynila",
-    "metro manila",
-    "ncr",
-    "all levels",
-    "batang maynila",
-    "manileño"
+    "manila", "maynila", "lungsod ng maynila", "metro manila", 
+    "ncr", "all levels", "batang maynila", "manileño"
 ]
 
-LAST_POST_FILE = "last_post.txt"
+SEEN_HASHES_FILE = "seen_posts.txt"
 
 def send_telegram_alert(text):
     message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:600]}...\n\n🔗 [View Facebook Page]({TARGET_URL})"
@@ -44,21 +30,21 @@ def send_telegram_alert(text):
         "disable_web_page_preview": False
     }
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        res = requests.post(url, json=payload)
+        res.raise_for_status()
         print("Telegram alert sent successfully.")
     except Exception as e:
         print(f"Failed to send Telegram alert: {e}")
 
-def get_last_seen():
-    if os.path.exists(LAST_POST_FILE):
-        with open(LAST_POST_FILE, "r") as f:
-            return f.read().strip()
-    return ""
+def get_seen_hashes():
+    if os.path.exists(SEEN_HASHES_FILE):
+        with open(SEEN_HASHES_FILE, "r") as f:
+            return set(line.strip() for line in f if line.strip())
+    return set()
 
-def save_last_seen(post_snippet):
-    with open(LAST_POST_FILE, "w") as f:
-        f.write(post_snippet)
+def save_seen_hash(post_hash):
+    with open(SEEN_HASHES_FILE, "a") as f:
+        f.write(f"{post_hash}\n")
 
 def run():
     with sync_playwright() as p:
@@ -76,71 +62,64 @@ def run():
         page.goto(TARGET_URL, wait_until="domcontentloaded")
         page.wait_for_timeout(4000)
 
-        # Clear login overlays
+        # 1. JS DOM Purge: Strip popups, dialogs, comments, and sidebars directly from tree
         page.evaluate("""
             () => {
-                const selectors = ['[role="dialog"]', '#login_popup', 'div[aria-label="Close"]'];
-                selectors.forEach(selector => {
-                    document.querySelectorAll(selector).forEach(el => el.remove());
-                });
+                const selectors = ['[role="dialog"]', '#login_popup', 'div[aria-label="Close"]', 'ul', 'div[role="comment"]'];
+                selectors.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
             }
         """)
 
-        # Scroll to load post cards
+        # 2. Scroll & Expand: Load cards into memory and click all "See more" triggers
         for _ in range(4):
             page.mouse.wheel(0, 1000)
             page.wait_for_timeout(1000)
 
-        # Force expand all "See more" text collapses directly via JS
         page.evaluate("""
             () => {
-                const seeMoreBtns = Array.from(document.querySelectorAll('div[role="button"]')).filter(
+                const btns = Array.from(document.querySelectorAll('div[role="button"]')).filter(
                     el => el.innerText.includes('See more') || el.innerText.includes('See More')
                 );
-                seeMoreBtns.forEach(btn => btn.click());
+                btns.forEach(b => b.click());
             }
         """)
         page.wait_for_timeout(2000)
 
-        # Extract articles while ignoring user comment threads
+        # 3. Target valid post cards
         elements = page.query_selector_all('div[role="article"]')
         collected_posts = []
         for el in elements:
             text = el.inner_text().strip()
-            # Verify the element originates from the page author rather than a comment
-            if text and "Isko Moreno Domagoso" in text and text not in collected_posts:
+            if len(text) > 40 and text not in collected_posts:
                 collected_posts.append(text)
 
-        print(f"Total valid author posts extracted: {len(collected_posts)}")
+        print(f"Total post containers extracted: {len(collected_posts)}")
 
-        last_seen = get_last_seen()
+        seen_hashes = get_seen_hashes()
         match_found = False
 
         for idx, post_text in enumerate(collected_posts[:10]):
-            post_snippet = post_text[:100].replace("\n", " ")
+            # SHA-256 uniquely identifies the post content
+            post_hash = hashlib.sha256(post_text.encode('utf-8')).hexdigest()
             post_text_lower = post_text.lower()
 
-            has_suspension = any(kw.lower() in post_text_lower for kw in SUSPENSION_KEYWORDS)
-            has_location = any(loc.lower() in post_text_lower for loc in LOCATION_KEYWORDS)
+            has_suspension = any(kw in post_text_lower for kw in SUSPENSION_KEYWORDS)
+            has_location = any(loc in post_text_lower for loc in LOCATION_KEYWORDS)
 
             if has_suspension and (has_location or "#walangpasok" in post_text_lower):
-                if post_snippet != last_seen:
-                    print("Matching new post found! Sending Telegram alert...")
+                if post_hash not in seen_hashes:
+                    print(f"Matching NEW post found! Sending Telegram alert...")
                     send_telegram_alert(post_text)
-                    save_last_seen(post_snippet)
+                    save_seen_hash(post_hash)
                     match_found = True
                     break
                 else:
-                    print("Matching post found, but it has already been reported.")
+                    print("Matching post found, but already reported.")
                     match_found = True
                     break
 
         if not match_found:
-            print("Checked recent posts: No relevant class suspension updates detected.")
-            if collected_posts:
-                top_snippet = collected_posts[0][:100].replace("\n", " ")
-                if top_snippet != last_seen:
-                    save_last_seen(top_snippet)
+            print("Checked top posts: No new suspension updates detected.")
 
         browser.close()
 

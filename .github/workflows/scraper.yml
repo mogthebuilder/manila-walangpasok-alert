@@ -1,8 +1,9 @@
-name: 5-Minute Mayor FB Monitor
+name: Mayor FB Monitor
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Runs at 12:00 AM Midnight & 6:00 AM PHT, Monday through Saturday
+    - cron: '0 16,22 * * 0-5'
   workflow_dispatch:
 
 jobs:

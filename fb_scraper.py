@@ -1,27 +1,31 @@
 import os
 import hashlib
 import requests
-from playwright.sync_api import sync_playwright
 
+# Secrets from Environment
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN")
+
 TARGET_URL = "https://www.facebook.com/iskomorenodomagoso"
 
 SUSPENSION_KEYWORDS = [
-    "walangpasok", "walang pasok", "suspension", "suspended", 
-    "cancel", "cancelled", "cancellation", "no classes", 
+    "walangpasok", "walang pasok", "suspension", "suspended",
+    "cancel", "cancelled", "cancellation", "no classes",
     "suspensyon", "alternative", "alternative mode", "online classes"
 ]
 
 LOCATION_KEYWORDS = [
-    "manila", "maynila", "lungsod ng maynila", "metro manila", 
+    "manila", "maynila", "lungsod ng maynila", "metro manila",
     "ncr", "all levels", "batang maynila", "manileño"
 ]
 
 SEEN_HASHES_FILE = "seen_posts.txt"
 
-def send_telegram_alert(text):
-    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:600]}...\n\n🔗 [View Facebook Page]({TARGET_URL})"
+def send_telegram_alert(text, post_url=None):
+    url_to_share = post_url if post_url else TARGET_URL
+    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:600]}...\n\n🔗 [View Facebook Post]({url_to_share})"
+    
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -47,81 +51,62 @@ def save_seen_hash(post_hash):
         f.write(f"{post_hash}\n")
 
 def run():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 900}
-        )
-        page = context.new_page()
+    print(f"Calling Apify Facebook Scraper for {TARGET_URL}...")
+    
+    # Synchronous run endpoint for Apify Facebook Posts Scraper actor
+    apify_url = f"https://api.apify.com/v2/acts/apify~facebook-posts-scraper/run-sync-get-dataset-items?token={APIFY_TOKEN}"
+    
+    payload = {
+        "startUrls": [{"url": TARGET_URL}],
+        "maxPosts": 5
+    }
+
+    try:
+        response = requests.post(apify_url, json=payload, timeout=120)
+        response.raise_for_status()
+        posts = response.json()
+    except Exception as e:
+        print(f"Error calling Apify API: {e}")
+        return
+
+    if not posts or not isinstance(posts, list):
+        print("No posts returned from Apify.")
+        return
+
+    print(f"Successfully retrieved {len(posts)} posts from Apify.")
+
+    seen_hashes = get_seen_hashes()
+    match_found = False
+
+    for post in posts:
+        # Extract full post text from Apify JSON schema
+        post_text = post.get("text") or post.get("postText") or post.get("message") or ""
+        post_url = post.get("url") or post.get("postUrl") or TARGET_URL
         
-        print(f"Navigating to {TARGET_URL}...")
-        page.goto(TARGET_URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(4000)
+        if not post_text.strip():
+            continue
 
-        # 1. JS DOM Purge: Strip popups, dialogs, comments, and sidebars directly from tree
-        page.evaluate("""
-            () => {
-                const selectors = ['[role="dialog"]', '#login_popup', 'div[aria-label="Close"]', 'ul', 'div[role="comment"]'];
-                selectors.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
-            }
-        """)
+        # SHA-256 Hash for deduplication
+        post_hash = hashlib.sha256(post_text.encode('utf-8')).hexdigest()
+        post_text_lower = post_text.lower()
 
-        # 2. Scroll & Expand: Load cards into memory and click all "See more" triggers
-        for _ in range(4):
-            page.mouse.wheel(0, 1000)
-            page.wait_for_timeout(1000)
+        has_suspension = any(kw in post_text_lower for kw in SUSPENSION_KEYWORDS)
+        has_location = any(loc in post_text_lower for loc in LOCATION_KEYWORDS)
 
-        page.evaluate("""
-            () => {
-                const btns = Array.from(document.querySelectorAll('div[role="button"]')).filter(
-                    el => el.innerText.includes('See more') || el.innerText.includes('See More')
-                );
-                btns.forEach(b => b.click());
-            }
-        """)
-        page.wait_for_timeout(2000)
+        if has_suspension and (has_location or "#walangpasok" in post_text_lower):
+            if post_hash not in seen_hashes:
+                print("Matching NEW suspension post detected! Sending Telegram alert...")
+                send_telegram_alert(post_text, post_url)
+                save_seen_hash(post_hash)
+                match_found = True
+                break
+            else:
+                print("Matching suspension post found, but already reported.")
+                match_found = True
+                break
 
-        # 3. Target valid post cards
-        elements = page.query_selector_all('div[role="article"]')
-        collected_posts = []
-        for el in elements:
-            text = el.inner_text().strip()
-            if len(text) > 40 and text not in collected_posts:
-                collected_posts.append(text)
-
-        print(f"Total post containers extracted: {len(collected_posts)}")
-
-        seen_hashes = get_seen_hashes()
-        match_found = False
-
-        for idx, post_text in enumerate(collected_posts[:10]):
-            # SHA-256 uniquely identifies the post content
-            post_hash = hashlib.sha256(post_text.encode('utf-8')).hexdigest()
-            post_text_lower = post_text.lower()
-
-            has_suspension = any(kw in post_text_lower for kw in SUSPENSION_KEYWORDS)
-            has_location = any(loc in post_text_lower for loc in LOCATION_KEYWORDS)
-
-            if has_suspension and (has_location or "#walangpasok" in post_text_lower):
-                if post_hash not in seen_hashes:
-                    print(f"Matching NEW post found! Sending Telegram alert...")
-                    send_telegram_alert(post_text)
-                    save_seen_hash(post_hash)
-                    match_found = True
-                    break
-                else:
-                    print("Matching post found, but already reported.")
-                    match_found = True
-                    break
-
-        if not match_found:
-            print("Checked top posts: No new suspension updates detected.")
-
-        browser.close()
+    if not match_found:
+        print("Checked latest posts: No new suspension updates detected.")
 
 if __name__ == "__main__":
     run()

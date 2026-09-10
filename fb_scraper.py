@@ -1,15 +1,12 @@
 import os
+import re
 import requests
 from playwright.sync_api import sync_playwright
 
-# Telegram Environment Secrets
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-# Target Facebook Page
 TARGET_URL = "https://www.facebook.com/iskomorenodomagoso"
 
-# Keywords
 SUSPENSION_KEYWORDS = [
     "walangpasok",
     "walang pasok",
@@ -31,13 +28,15 @@ LOCATION_KEYWORDS = [
     "lungsod ng maynila",
     "metro manila",
     "ncr",
-    "all levels"
+    "all levels",
+    "batang maynila",
+    "manileño"
 ]
 
 LAST_POST_FILE = "last_post.txt"
 
 def send_telegram_alert(text):
-    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:500]}...\n\n🔗 [View Facebook Page]({TARGET_URL})"
+    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:600]}...\n\n🔗 [View Facebook Page]({TARGET_URL})"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -64,18 +63,13 @@ def save_last_seen(post_snippet):
 
 def run():
     with sync_playwright() as p:
-        # Launch browser with explicit arguments to bypass bot detection screens
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox"
-            ]
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
+            viewport={"width": 1280, "height": 900}
         )
         page = context.new_page()
         
@@ -83,7 +77,7 @@ def run():
         page.goto(TARGET_URL, wait_until="domcontentloaded")
         page.wait_for_timeout(4000)
 
-        # Inject JS to remove login modals blocking the post feed
+        # Clear login overlays
         page.evaluate("""
             () => {
                 const selectors = ['[role="dialog"]', '#login_popup', 'div[aria-label="Close"]'];
@@ -93,31 +87,34 @@ def run():
             }
         """)
 
+        # Scroll to load up to 10 post cards
+        for _ in range(5):
+            page.mouse.wheel(0, 1200)
+            page.wait_for_timeout(1200)
+
+        # Expand all "See more" text collapses
+        try:
+            see_more_buttons = page.query_selector_all('div[role="button"]:has-text("See more"), div[role="button"]:has-text("See More")')
+            for btn in see_more_buttons:
+                try:
+                    btn.click(timeout=1000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        elements = page.query_selector_all('div[role="article"]')
+        collected_posts = []
+        for el in elements:
+            text = el.inner_text().strip()
+            if text and text not in collected_posts:
+                collected_posts.append(text)
+
+        print(f"Total expanded post containers extracted: {len(collected_posts)}")
+
         last_seen = get_last_seen()
         match_found = False
-        collected_posts = []
 
-        # Scroll in increments to force post elements into the DOM
-        for _ in range(4):
-            page.mouse.wheel(0, 1500)
-            page.wait_for_timeout(1500)
-            
-            # Query posts currently rendered
-            elements = page.query_selector_all('div[role="article"]')
-            for el in elements:
-                text = el.inner_text().strip()
-                if text and text not in collected_posts:
-                    collected_posts.append(text)
-
-        print(f"Total post containers extracted: {len(collected_posts)}")
-
-        if not collected_posts:
-            print("No post content extracted. Checking raw page text...")
-            body_text = page.inner_text("body")
-            if body_text:
-                collected_posts.append(body_text)
-
-        # Evaluate extracted posts (checking top 10)
         for post_text in collected_posts[:10]:
             post_snippet = post_text[:100].replace("\n", " ")
             post_text_lower = post_text.lower()
@@ -125,7 +122,8 @@ def run():
             has_suspension = any(kw.lower() in post_text_lower for kw in SUSPENSION_KEYWORDS)
             has_location = any(loc.lower() in post_text_lower for loc in LOCATION_KEYWORDS)
 
-            if has_suspension and has_location:
+            # Fire alert if explicit suspension word is present (Location context assumed on official page)
+            if has_suspension and (has_location or "#walangpasok" in post_text_lower):
                 if post_snippet != last_seen:
                     print("Matching new post found! Sending Telegram alert...")
                     send_telegram_alert(post_text)

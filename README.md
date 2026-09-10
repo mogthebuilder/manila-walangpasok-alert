@@ -1,2 +1,2 @@
-# pasay-walangpasok-alert
+# manila-walangpasok-alert
 Updates for class suspension posts using Tg and fbk

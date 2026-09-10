@@ -74,7 +74,11 @@ def run():
         
         print(f"Navigating to {TARGET_URL}...")
         page.goto(TARGET_URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(5000)
+        
+        # Scroll down slightly to ensure Facebook loads up to 10 post cards
+        for _ in range(3):
+            page.mouse.wheel(0, 1000)
+            page.wait_for_timeout(1000)
 
         # Target post elements by accessibility role
         posts = page.query_selector_all('div[role="article"]')
@@ -86,8 +90,8 @@ def run():
         last_seen = get_last_seen()
         match_found = False
 
-        # Scan through the top 5 recent posts
-        for post in posts[:5]:
+        # Scan through the top 10 recent posts
+        for post in posts[:10]:
             post_text = post.inner_text()
             post_snippet = post_text[:100].replace("\n", " ")
             post_text_lower = post_text.lower()
@@ -109,7 +113,7 @@ def run():
                     break
 
         if not match_found:
-            print("Checked top 5 posts: No relevant class suspension updates detected.")
+            print("Checked top 10 posts: No relevant class suspension updates detected.")
             # Record the latest top post snippet to maintain accurate state tracking
             top_snippet = posts[0].inner_text()[:100].replace("\n", " ")
             if top_snippet != last_seen:

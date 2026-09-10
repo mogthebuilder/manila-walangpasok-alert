@@ -39,7 +39,7 @@ LOCATION_KEYWORDS = [
 LAST_POST_FILE = "last_post.txt"
 
 def send_telegram_alert(text):
-    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:500]}...\n\n🔗 [View Facebook Post]({TARGET_URL})"
+    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:500]}...\n\n🔗 [View Facebook Page]({TARGET_URL})"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -83,31 +83,37 @@ def run():
             browser.close()
             return
 
-        latest_post = posts[0].inner_text()
-        post_snippet = latest_post[:100].replace("\n", " ")
-
         last_seen = get_last_seen()
+        match_found = False
 
-        # Check if the top post is new
-        if post_snippet != last_seen:
-            print("New post detected! Checking keywords...")
-            post_text_lower = latest_post.lower()
+        # Scan through the top 5 recent posts
+        for post in posts[:5]:
+            post_text = post.inner_text()
+            post_snippet = post_text[:100].replace("\n", " ")
+            post_text_lower = post_text.lower()
 
-            # Check if any suspension keyword matches
-            has_suspension_keyword = any(kw.lower() in post_text_lower for kw in SUSPENSION_KEYWORDS)
-            
-            # Check if any location keyword matches
-            has_location_keyword = any(loc.lower() in post_text_lower for loc in LOCATION_KEYWORDS)
+            # Check for suspension and location keyword matches
+            has_suspension = any(kw.lower() in post_text_lower for kw in SUSPENSION_KEYWORDS)
+            has_location = any(loc.lower() in post_text_lower for loc in LOCATION_KEYWORDS)
 
-            if has_suspension_keyword and has_location_keyword:
-                print("Matching post found! Sending Telegram alert...")
-                send_telegram_alert(latest_post)
-            else:
-                print("New post found, but no matching suspension keywords.")
+            if has_suspension and has_location:
+                if post_snippet != last_seen:
+                    print("Matching new post found! Sending Telegram alert...")
+                    send_telegram_alert(post_text)
+                    save_last_seen(post_snippet)
+                    match_found = True
+                    break  # Stop checking once the newest alert is handled
+                else:
+                    print("Matching post found, but it has already been reported.")
+                    match_found = True
+                    break
 
-            save_last_seen(post_snippet)
-        else:
-            print("No new posts since last check.")
+        if not match_found:
+            print("Checked top 5 posts: No relevant class suspension updates detected.")
+            # Record the latest top post snippet to maintain accurate state tracking
+            top_snippet = posts[0].inner_text()[:100].replace("\n", " ")
+            if top_snippet != last_seen:
+                save_last_seen(top_snippet)
 
         browser.close()
 

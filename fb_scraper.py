@@ -7,8 +7,8 @@ from playwright.sync_api import sync_playwright
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Target Facebook Page
-TARGET_URL = "https://www.facebook.com/iskomorenodomagoso"
+# Target Facebook Page (Using mbasic interface for stable headless parsing)
+TARGET_URL = "https://mbasic.facebook.com/iskomorenodomagoso"
 
 # Primary suspension action triggers
 SUSPENSION_KEYWORDS = [
@@ -39,7 +39,7 @@ LOCATION_KEYWORDS = [
 LAST_POST_FILE = "last_post.txt"
 
 def send_telegram_alert(text):
-    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:500]}...\n\n🔗 [View Facebook Page]({TARGET_URL})"
+    message = f"🚨 *CLASS SUSPENSION / WALANG PASOK ALERT* 🚨\n\n{text[:500]}...\n\n🔗 [View Facebook Page](https://www.facebook.com/iskomorenodomagoso)"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -67,47 +67,42 @@ def save_last_seen(post_snippet):
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # Mobile viewport forces Facebook to render lightweight HTML without strict login popups
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = context.new_page()
         
         print(f"Navigating to {TARGET_URL}...")
-        page.goto(TARGET_URL, wait_until="domcontentloaded")
+        page.goto(TARGET_URL, wait_until="networkidle")
         page.wait_for_timeout(3000)
 
-        # Attempt to dismiss Facebook login overlays if rendered
-        try:
-            close_button = page.query_selector('div[aria-label="Close"]') or page.query_selector('i[class*="x1b0d499"]')
-            if close_button:
-                close_button.click()
-                print("Dismissed Facebook login popup.")
-        except Exception:
-            pass
-
-        # Scroll down to pull past pinned posts into the DOM
-        for _ in range(5):
-            page.mouse.wheel(0, 1200)
-            page.wait_for_timeout(1000)
-
-        # Target post elements by accessibility role
-        posts = page.query_selector_all('div[role="article"]')
+        # Multi-selector strategy: Check mbasic containers, article roles, and standard div posts
+        posts = page.query_selector_all('article, div[role="article"], div[id*="u_0_"], div.story_body_container')
+        
         if not posts:
-            print("No posts found or page failed to load.")
-            browser.close()
-            return
+            # Fallback to direct page text evaluation if specific containers are hidden
+            print("Specific post containers not detected. Evaluating body text...")
+            body_element = page.query_selector("body")
+            if body_element:
+                posts = [body_element]
+            else:
+                print("No posts found or page failed to load.")
+                browser.close()
+                return
 
         last_seen = get_last_seen()
         match_found = False
 
-        # Scan through the top 10 recent posts
+        # Scan through detected post containers
         for post in posts[:10]:
             post_text = post.inner_text()
+            if not post_text.strip():
+                continue
+
             post_snippet = post_text[:100].replace("\n", " ")
             post_text_lower = post_text.lower()
 
-            # Check for suspension and location keyword matches
+            # Check for keyword matches
             has_suspension = any(kw.lower() in post_text_lower for kw in SUSPENSION_KEYWORDS)
             has_location = any(loc.lower() in post_text_lower for loc in LOCATION_KEYWORDS)
 
@@ -117,18 +112,19 @@ def run():
                     send_telegram_alert(post_text)
                     save_last_seen(post_snippet)
                     match_found = True
-                    break  # Stop checking once the newest alert is handled
+                    break
                 else:
                     print("Matching post found, but it has already been reported.")
                     match_found = True
                     break
 
         if not match_found:
-            print("Checked top 10 posts: No relevant class suspension updates detected.")
-            # Record the latest top post snippet to maintain accurate state tracking
-            top_snippet = posts[0].inner_text()[:100].replace("\n", " ")
-            if top_snippet != last_seen:
-                save_last_seen(top_snippet)
+            print("Checked recent posts: No relevant class suspension updates detected.")
+            top_text = posts[0].inner_text()
+            if top_text.strip():
+                top_snippet = top_text[:100].replace("\n", " ")
+                if top_snippet != last_seen:
+                    save_last_seen(top_snippet)
 
         browser.close()
 

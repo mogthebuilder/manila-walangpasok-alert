@@ -58,7 +58,7 @@ def run():
     
     payload = {
         "startUrls": [{"url": TARGET_URL}],
-        "maxPosts": 5
+        "maxPosts": 10
     }
 
     try:

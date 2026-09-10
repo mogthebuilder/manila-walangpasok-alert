@@ -2,31 +2,35 @@ name: 5-Minute Mayor FB Monitor
 
 on:
   schedule:
-    # Runs every 5 minutes automatically
     - cron: '*/5 * * * *'
-  workflow_dispatch: # Allows manual trigger testing
+  workflow_dispatch:
 
 jobs:
   scrape-and-notify:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install playwright requests
-        playwright install chromium
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
 
-    - name: Run Scraper
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.BELLRINGER_MANILA_BOT }}
-        TELEGRAM_CHAT_ID: ${{ secrets.BELLRINGER_MANILA_BOT_CHANNEL_ID }}
-      run: python fb_scraper.py
+      - name: Run FB Scraper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.BELLRINGER_MANILA_BOT }}
+          TELEGRAM_CHAT_ID: ${{ secrets.BELLRINGER_MANILA_BOT_CHANNEL_ID }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        run: python fb_scraper.py
+
+      - name: Commit state
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_posts.txt || true
+          git commit -m "Update state" || true
+          git push || true

@@ -67,17 +67,28 @@ def save_last_seen(post_snippet):
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Mobile viewport forces Facebook to render lightweight HTML without strict login popups
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
         )
         page = context.new_page()
         
         print(f"Navigating to {TARGET_URL}...")
         page.goto(TARGET_URL, wait_until="domcontentloaded")
-        
-        # Scroll down slightly to ensure Facebook loads up to 10 post cards
-        for _ in range(3):
-            page.mouse.wheel(0, 1000)
+        page.wait_for_timeout(3000)
+
+        # Attempt to dismiss Facebook login overlays if rendered
+        try:
+            close_button = page.query_selector('div[aria-label="Close"]') or page.query_selector('i[class*="x1b0d499"]')
+            if close_button:
+                close_button.click()
+                print("Dismissed Facebook login popup.")
+        except Exception:
+            pass
+
+        # Scroll down to pull past pinned posts into the DOM
+        for _ in range(5):
+            page.mouse.wheel(0, 1200)
             page.wait_for_timeout(1000)
 
         # Target post elements by accessibility role
